@@ -1,0 +1,108 @@
+name: sync upstreams
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: upstream-sync
+jobs:
+  sync:
+    # The checks run vendored code, so this job only gets a read-only token.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      bundle: ${{ steps.sync.outputs.bundle }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - id: sync
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sources"
+          ready=0
+          failed=0
+          for name in $(node -e "console.log(Object.keys(JSON.parse(require('fs').readFileSync('upstreams.json','utf8'))).join(' '))"); do
+            git reset --hard
+            git clean -fd
+            node scripts/sync.mjs --only "$name" > "$RUNNER_TEMP/summary.md"
+            dirty=false
+            git diff --quiet || dirty=true
+            [ -z "$(git ls-files --others --exclude-standard)" ] || dirty=true
+            if [ "$dirty" = false ]; then continue; fi
+            if ! node scripts/check.mjs > "$RUNNER_TEMP/check.txt" 2>&1; then
+              failed=1
+              echo "Checks failed for $name; not opening a pull request."
+              cat "$RUNNER_TEMP/check.txt"
+              continue
+            fi
+            mkdir -p "$RUNNER_TEMP/sources/$name"
+            cp upstreams.json "$RUNNER_TEMP/sources/$name/upstreams.json"
+            {
+              cat "$RUNNER_TEMP/summary.md"
+              printf '\n## Checks: passed\n\n```text\n'
+              cat "$RUNNER_TEMP/check.txt"
+              printf '```\n\nReview with CHECKLIST.md, "Every upstream sync". This pull request is never merged automatically.\n'
+            } > "$RUNNER_TEMP/sources/$name/body.md"
+            ready=1
+          done
+          git reset --hard
+          git clean -fd
+          if [ "$ready" = 0 ]; then
+            echo changed=false >> "$GITHUB_OUTPUT"
+            [ "$failed" = 0 ]
+            exit
+          fi
+          SRC="$RUNNER_TEMP/sources" OUT="$RUNNER_TEMP/bundle.json" node -e "const fs=require('fs'); const path=require('path'); const dir=process.env.SRC; const out={}; for (const name of fs.readdirSync(dir)) { const p=path.join(dir,name); out[name]={ pins: fs.readFileSync(path.join(p,'upstreams.json')).toString('base64'), body: fs.readFileSync(path.join(p,'body.md')).toString('base64') } } fs.writeFileSync(process.env.OUT, JSON.stringify(out))"
+          echo changed=true >> "$GITHUB_OUTPUT"
+          echo "bundle=$(base64 -w0 "$RUNNER_TEMP/bundle.json")" >> "$GITHUB_OUTPUT"
+          if [ "$failed" = 1 ]; then echo 'Some upstreams failed checks and were left out.'; fi
+
+  pull-request:
+    # The only job that can write; it runs our sync script, never vendored code.
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - env:
+          BUNDLE: ${{ needs.sync.outputs.bundle }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          echo "$BUNDLE" | base64 -d > "$RUNNER_TEMP/bundle.json"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for name in $(jq -r 'keys[]' "$RUNNER_TEMP/bundle.json"); do
+            open=$(gh pr list --head "upstream/$name" --base main --state open --json number --jq 'length')
+            if [ "$open" != 0 ]; then
+              echo "upstream/$name already has an open pull request; merge or close it to get the next one."
+              continue
+            fi
+            git switch -C "upstream/$name" origin/main
+            jq -r --arg n "$name" '.[$n].pins' "$RUNNER_TEMP/bundle.json" | base64 -d > upstreams.json
+            node scripts/sync.mjs --restore --only "$name"
+            jq -r --arg n "$name" '.[$n].body' "$RUNNER_TEMP/bundle.json" | base64 -d > "$RUNNER_TEMP/body.md"
+            git add -A
+            git commit -m "Sync $name"
+            if git ls-remote --exit-code --heads origin "upstream/$name" >/dev/null; then
+              git fetch origin "upstream/$name"
+              git push --force-with-lease="refs/heads/upstream/$name:refs/remotes/origin/upstream/$name" origin "HEAD:upstream/$name"
+            else
+              git push -u origin "HEAD:upstream/$name"
+            fi
+            gh pr create --base main --head "upstream/$name" --title "Sync $name" --body-file "$RUNNER_TEMP/body.md"
+          done
