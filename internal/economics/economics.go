@@ -1,0 +1,128 @@
+package economics
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/edouard-claude/snip/internal/config"
+	"github.com/edouard-claude/snip/internal/display"
+	"github.com/edouard-claude/snip/internal/tracking"
+	"github.com/edouard-claude/snip/internal/utils"
+)
+
+// CostForTokens returns the dollar cost for the given token count at the tier price.
+func CostForTokens(tokens int, pricePerM float64) float64 {
+	return float64(tokens) / 1_000_000 * pricePerM
+}
+
+// FormatCost formats a dollar amount for display.
+func FormatCost(amount float64) string {
+	if amount >= 100 {
+		return fmt.Sprintf("$%.0f", amount)
+	}
+	if amount >= 10 {
+		return fmt.Sprintf("$%.1f", amount)
+	}
+	return fmt.Sprintf("$%.2f", amount)
+}
+
+// Run executes the cc-economics subcommand. ecoCfg supplies the pricing
+// tiers ([economics.tiers] in config.toml, or the built-in defaults).
+func Run(tracker *tracking.Tracker, ecoCfg config.EconomicsConfig, args []string) error {
+	if tracker == nil {
+		display.PrintError("no tracking data (run some commands first)")
+		return nil
+	}
+
+	activeTiers := config.ActiveTiers(ecoCfg)
+
+	// Parse --tier flag
+	var filterTier string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--tier" && i+1 < len(args) {
+			filterTier = args[i+1]
+			i++
+		}
+	}
+
+	if filterTier != "" && config.FindTier(activeTiers, filterTier) == nil {
+		return fmt.Errorf("unknown tier %q (valid: %s)", filterTier, strings.Join(config.TierNames(activeTiers), ", "))
+	}
+
+	summary, err := tracker.GetSummary()
+	if err != nil {
+		return fmt.Errorf("get summary: %w", err)
+	}
+
+	daily, err := tracker.GetDaily(90)
+	if err != nil {
+		return fmt.Errorf("get daily stats: %w", err)
+	}
+
+	totalDays := len(daily)
+	if totalDays == 0 {
+		totalDays = 1
+	}
+
+	tty := display.IsTerminal()
+
+	fmt.Println()
+	if tty {
+		fmt.Println(display.HeaderStyle.Render("  snip cc-economics - token savings cost analysis"))
+	} else {
+		fmt.Println("  snip cc-economics - token savings cost analysis")
+	}
+	fmt.Println()
+
+	printKPI := func(label, value string) {
+		if tty {
+			fmt.Printf("  %s  %s\n", display.DimStyle.Render(fmt.Sprintf("%-24s", label)), display.StatStyle.Render(value))
+		} else {
+			fmt.Printf("  %-24s  %s\n", label, value)
+		}
+	}
+
+	printKPI("Total tokens saved", utils.FormatTokens(summary.TotalSaved))
+	fmt.Println()
+
+	if tty {
+		fmt.Println(display.DimStyle.Render("  Estimated savings by model tier:"))
+	} else {
+		fmt.Println("  Estimated savings by model tier:")
+	}
+
+	tiers := activeTiers
+	if filterTier != "" {
+		t := config.FindTier(activeTiers, filterTier)
+		tiers = []config.Tier{*t}
+	}
+
+	nameWidth := 8
+	for _, t := range tiers {
+		if len(t.Name) > nameWidth {
+			nameWidth = len(t.Name)
+		}
+	}
+	for _, t := range tiers {
+		cost := CostForTokens(summary.TotalSaved, t.PriceM)
+		label := fmt.Sprintf("    %-*s", nameWidth, t.Name)
+		value := FormatCost(cost)
+		if tty {
+			fmt.Printf("  %s %s\n", display.DimStyle.Render(label), display.GreenStyle.Render(value))
+		} else {
+			fmt.Printf("  %s %s\n", label, value)
+		}
+	}
+
+	fmt.Println()
+	if tty {
+		fmt.Println(display.DimStyle.Render(fmt.Sprintf("  Based on %d filtered commands over %d days.", summary.TotalCommands, totalDays)))
+		fmt.Println(display.DimStyle.Render("  Assumes saved tokens are input tokens (filtered output fed back to LLM context)."))
+	} else {
+		fmt.Printf("  Based on %d filtered commands over %d days.\n", summary.TotalCommands, totalDays)
+		fmt.Println("  Assumes saved tokens are input tokens (filtered output fed back to LLM context).")
+	}
+	fmt.Println()
+
+	return nil
+}

@@ -1,0 +1,50 @@
+version: 2
+
+gomod:
+  proxy: false
+
+builds:
+  - main: ./cmd/snip
+    binary: snip
+    ldflags:
+      - -s -w -X github.com/edouard-claude/snip/internal/cli.version={{ .Version }}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+homebrew_casks:
+  - repository:
+      owner: edouard-claude
+      name: homebrew-tap
+    homepage: "https://github.com/edouard-claude/snip"
+    description: "CLI proxy that reduces LLM token consumption by 60-90% by filtering shell output"
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/snip"]
+        end
+      end
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"

@@ -1,0 +1,318 @@
+//go:build !lite
+
+package tracking
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/edouard-claude/snip/internal/testutil"
+)
+
+// TestTrackUnwritableDBIsUnavailable verifies that when the tracking DB path is
+// unwritable (sandboxed/read-only filesystem), Track returns an error wrapping
+// ErrUnavailable so best-effort callers can degrade silently (issue #93).
+func TestTrackUnwritableDBIsUnavailable(t *testing.T) {
+	// A regular file used as a parent directory makes os.MkdirAll fail with
+	// ENOTDIR, deterministically simulating an unwritable DB location.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(blocker, "sub", "tracking.db")
+
+	tr := NewLazyTracker(dbPath)
+	err := tr.Track("git status", "snip run -- git status", 100, 10, 5)
+	if err == nil {
+		t.Fatal("expected an error when the DB path is unwritable")
+	}
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("error %v should wrap ErrUnavailable", err)
+	}
+}
+
+func newTestTracker(t *testing.T) *Tracker {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	tracker, err := NewTracker(dbPath)
+	if err != nil {
+		t.Fatalf("new tracker: %v", err)
+	}
+	t.Cleanup(func() { _ = tracker.Close() })
+	return tracker
+}
+
+func TestTrackUnfiltered(t *testing.T) {
+	tr := newTestTracker(t)
+
+	if err := tr.TrackUnfiltered("cargo", "cargo build"); err != nil {
+		t.Fatalf("track unfiltered: %v", err)
+	}
+	if err := tr.TrackUnfiltered("cargo", "cargo build --release"); err != nil {
+		t.Fatalf("track unfiltered: %v", err)
+	}
+	if err := tr.TrackUnfiltered("make", "make all"); err != nil {
+		t.Fatalf("track unfiltered: %v", err)
+	}
+
+	stats, err := tr.GetUnfiltered(10)
+	if err != nil {
+		t.Fatalf("get unfiltered: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("got %d unfiltered commands, want 2", len(stats))
+	}
+	// Ordered by frequency DESC: cargo (2 runs) before make (1 run).
+	if stats[0].Command != "cargo" {
+		t.Errorf("first = %q, want cargo", stats[0].Command)
+	}
+	if stats[0].Count != 2 {
+		t.Errorf("cargo count = %d, want 2", stats[0].Count)
+	}
+	if stats[1].Command != "make" || stats[1].Count != 1 {
+		t.Errorf("second = %q (count %d), want make (1)", stats[1].Command, stats[1].Count)
+	}
+}
+
+// TestGetUnfilteredEmpty verifies an empty result (and table creation) when
+// nothing has been recorded.
+func TestGetUnfilteredEmpty(t *testing.T) {
+	tr := newTestTracker(t)
+	stats, err := tr.GetUnfiltered(10)
+	if err != nil {
+		t.Fatalf("get unfiltered: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected no rows, got %d", len(stats))
+	}
+}
+
+func TestNewTracker(t *testing.T) {
+	tracker := newTestTracker(t)
+	if tracker == nil {
+		t.Fatal("tracker is nil")
+	}
+}
+
+func TestTrack(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	err := tracker.Track("git log", "snip git log", 1000, 200, 50)
+	if err != nil {
+		t.Fatalf("track: %v", err)
+	}
+
+	summary, err := tracker.GetSummary()
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if summary.TotalCommands != 1 {
+		t.Errorf("total commands = %d", summary.TotalCommands)
+	}
+	if summary.TotalSaved != 800 {
+		t.Errorf("total saved = %d", summary.TotalSaved)
+	}
+	if summary.AvgSavings < 79 || summary.AvgSavings > 81 {
+		t.Errorf("avg savings = %.1f%%", summary.AvgSavings)
+	}
+}
+
+func TestTrackPassthrough(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	err := tracker.TrackPassthrough("npm install", 500, 100)
+	if err != nil {
+		t.Fatalf("track passthrough: %v", err)
+	}
+
+	summary, err := tracker.GetSummary()
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if summary.TotalSaved != 0 {
+		t.Errorf("expected 0 saved for passthrough, got %d", summary.TotalSaved)
+	}
+}
+
+func TestGetRecent(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	_ = tracker.Track("cmd1", "snip cmd1", 100, 30, 10)
+	_ = tracker.Track("cmd2", "snip cmd2", 200, 50, 20)
+	_ = tracker.Track("cmd3", "snip cmd3", 300, 80, 30)
+
+	recent, err := tracker.GetRecent(2)
+	if err != nil {
+		t.Fatalf("recent: %v", err)
+	}
+	if len(recent) != 2 {
+		t.Fatalf("got %d records, want 2", len(recent))
+	}
+	// Most recent first
+	if recent[0].OriginalCmd != "cmd3" {
+		t.Errorf("first = %q", recent[0].OriginalCmd)
+	}
+}
+
+func TestGetDaily(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	_ = tracker.Track("cmd1", "snip cmd1", 100, 30, 10)
+	_ = tracker.Track("cmd2", "snip cmd2", 200, 50, 20)
+
+	daily, err := tracker.GetDaily(7)
+	if err != nil {
+		t.Fatalf("daily: %v", err)
+	}
+	if len(daily) != 1 {
+		t.Fatalf("got %d days, want 1", len(daily))
+	}
+	if daily[0].Commands != 2 {
+		t.Errorf("commands = %d", daily[0].Commands)
+	}
+}
+
+func TestGetByCommand(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	_ = tracker.Track("git log", "snip git log", 1000, 200, 50)
+	_ = tracker.Track("git log", "snip git log", 800, 100, 40)
+	_ = tracker.Track("go test", "snip go test", 2000, 300, 100)
+	_ = tracker.Track("ls -la", "snip ls -la", 50, 30, 5)
+
+	stats, err := tracker.GetByCommand(10)
+	if err != nil {
+		t.Fatalf("by command: %v", err)
+	}
+	if len(stats) != 3 {
+		t.Fatalf("got %d commands, want 3", len(stats))
+	}
+	// go test has most saved (1700), then git log (1500), then ls -la (20)
+	if stats[0].Command != "go test" {
+		t.Errorf("first command = %q, want go test", stats[0].Command)
+	}
+	if stats[0].SavedTokens != 1700 {
+		t.Errorf("go test saved = %d, want 1700", stats[0].SavedTokens)
+	}
+	if stats[1].Command != "git log" {
+		t.Errorf("second command = %q, want git log", stats[1].Command)
+	}
+	if stats[1].Count != 2 {
+		t.Errorf("git log count = %d, want 2", stats[1].Count)
+	}
+}
+
+func TestGetByCommandLimit(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	_ = tracker.Track("cmd1", "snip cmd1", 100, 30, 10)
+	_ = tracker.Track("cmd2", "snip cmd2", 200, 50, 20)
+	_ = tracker.Track("cmd3", "snip cmd3", 300, 80, 30)
+
+	stats, err := tracker.GetByCommand(2)
+	if err != nil {
+		t.Fatalf("by command: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("got %d commands, want 2", len(stats))
+	}
+}
+
+func TestGetWeekly(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	_ = tracker.Track("cmd1", "snip cmd1", 100, 30, 10)
+	_ = tracker.Track("cmd2", "snip cmd2", 200, 50, 20)
+
+	weekly, err := tracker.GetWeekly(4)
+	if err != nil {
+		t.Fatalf("weekly: %v", err)
+	}
+	if len(weekly) != 1 {
+		t.Fatalf("got %d weeks, want 1", len(weekly))
+	}
+	if weekly[0].Commands != 2 {
+		t.Errorf("commands = %d, want 2", weekly[0].Commands)
+	}
+}
+
+func TestGetMonthly(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	_ = tracker.Track("cmd1", "snip cmd1", 500, 100, 30)
+	_ = tracker.Track("cmd2", "snip cmd2", 800, 200, 40)
+
+	monthly, err := tracker.GetMonthly(6)
+	if err != nil {
+		t.Fatalf("monthly: %v", err)
+	}
+	if len(monthly) != 1 {
+		t.Fatalf("got %d months, want 1", len(monthly))
+	}
+	if monthly[0].Commands != 2 {
+		t.Errorf("commands = %d, want 2", monthly[0].Commands)
+	}
+	if monthly[0].SavedTokens != 1000 {
+		t.Errorf("saved = %d, want 1000", monthly[0].SavedTokens)
+	}
+}
+
+func TestDBPath(t *testing.T) {
+	t.Setenv("SNIP_DB_PATH", "/custom/path.db")
+	if got := DBPath(""); got != "/custom/path.db" {
+		t.Errorf("got %q", got)
+	}
+
+	t.Setenv("SNIP_DB_PATH", "")
+	if got := DBPath("/config/path.db"); got != "/config/path.db" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestDBPathDefault(t *testing.T) {
+	t.Setenv("SNIP_DB_PATH", "")
+	tmpDir := t.TempDir()
+	testutil.SetHome(t, tmpDir)
+
+	path := DBPath("")
+	expected := filepath.Join(tmpDir, ".local", "share", "snip", "tracking.db")
+	if path != expected {
+		t.Errorf("DBPath() = %q, want %q", path, expected)
+	}
+}
+
+func TestWarmUp(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "warmup.db")
+	tr := NewLazyTracker(dbPath)
+	tr.WarmUp()
+
+	// WarmUp runs in background; track should work after warm-up.
+	// Give it a moment.
+	time.Sleep(50 * time.Millisecond)
+	err := tr.Track("test", "snip test", 100, 50, 10)
+	if err != nil {
+		t.Fatalf("track after warmup: %v", err)
+	}
+	_ = tr.Close()
+}
+
+func TestCloseNilDB(t *testing.T) {
+	tr := &Tracker{}
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close on nil db: %v", err)
+	}
+}
+
+func TestGetUnfilteredDefaultLimit(t *testing.T) {
+	tr := newTestTracker(t)
+	stats, err := tr.GetUnfiltered(0)
+	if err != nil {
+		t.Fatalf("get unfiltered default: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected no rows, got %d", len(stats))
+	}
+}

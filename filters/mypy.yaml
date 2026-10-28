@@ -1,0 +1,22 @@
+name: "mypy"
+version: 2
+description: "Condensed mypy output: type errors by file"
+
+match:
+  command: "mypy"
+
+streams:
+  - stdout
+  - stderr
+
+pipeline:
+  - action: "strip_ansi"
+  - action: "remove_lines"
+    pattern: "^\\s*$"
+  - action: "truncate_lines"
+    max: 120
+  - action: "head"
+    n: 50
+    overflow_msg: "... more errors"
+
+on_error: "passthrough"

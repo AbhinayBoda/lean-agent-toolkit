@@ -1,0 +1,465 @@
+//go:build !lite
+
+package display
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/edouard-claude/snip/internal/config"
+	"github.com/edouard-claude/snip/internal/tracking"
+)
+
+func newTestTracker(t *testing.T) *tracking.Tracker {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	tracker, err := tracking.NewTracker(dbPath)
+	if err != nil {
+		t.Fatalf("new tracker: %v", err)
+	}
+	t.Cleanup(func() { _ = tracker.Close() })
+	return tracker
+}
+
+func seedTracker(t *testing.T, tracker *tracking.Tracker) {
+	t.Helper()
+	_ = tracker.Track("git log", "snip git log", 1000, 200, 50)
+	_ = tracker.Track("go test", "snip go test", 2000, 300, 100)
+	_ = tracker.Track("git log", "snip git log", 800, 100, 40)
+	_ = tracker.Track("ls -la", "snip ls -la", 50, 30, 5)
+}
+
+func TestRunGainNoData(t *testing.T) {
+	tracker := newTestTracker(t)
+	err := RunGain(tracker, config.EconomicsConfig{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainWithData(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainDaily(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--daily"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainWeekly(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--weekly"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainMonthly(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--monthly"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainTop(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--top", "5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainTopDefault(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--top"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainHistory(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--history", "5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainHistoryDefault(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--history"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainJSON(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--json"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainCSV(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	err := RunGain(tracker, config.EconomicsConfig{}, []string{"--csv"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunGainNilTracker(t *testing.T) {
+	err := RunGain(nil, config.EconomicsConfig{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestCmdColWidth verifies that cmdColWidth returns the correct column width
+// for various terminal widths, clamping to a minimum of 20.
+func TestCmdColWidth(t *testing.T) {
+	tests := []struct {
+		termWidth  int
+		fixedWidth int
+		want       int
+	}{
+		{120, 36, 84}, // nominal: plenty of room
+		{30, 36, 20},  // narrow: clamped to minimum
+		{56, 36, 20},  // boundary: w==20, clamped
+	}
+	for _, tc := range tests {
+		got := cmdColWidth(tc.termWidth, tc.fixedWidth)
+		if got != tc.want {
+			t.Errorf("cmdColWidth(%d, %d) = %d, want %d", tc.termWidth, tc.fixedWidth, got, tc.want)
+		}
+	}
+}
+
+// TestRunGainNoTruncate verifies that --no-truncate causes long command names
+// to appear untruncated in the output.
+func TestRunGainNoTruncate(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	longCmd := strings.Repeat("x", 200)
+	_ = tracker.Track(longCmd, "snip "+longCmd, 5000, 100, 200)
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	runErr := RunGain(tracker, config.EconomicsConfig{}, []string{"--top", "1", "--no-truncate"})
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+	if !strings.Contains(buf.String(), longCmd) {
+		t.Errorf("expected long command (%d chars) to appear untruncated in output", len(longCmd))
+	}
+}
+
+func TestRunGainQuota(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	runErr := RunGain(tracker, config.EconomicsConfig{}, []string{"--quota"})
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Monthly projection") {
+		t.Error("expected output to contain 'Monthly projection'")
+	}
+	if !strings.Contains(output, "Tokens saved/month") {
+		t.Error("expected output to contain 'Tokens saved/month'")
+	}
+	if !strings.Contains(output, "Haiku savings") {
+		t.Error("expected output to contain 'Haiku savings'")
+	}
+	if !strings.Contains(output, "Sonnet savings") {
+		t.Error("expected output to contain 'Sonnet savings'")
+	}
+	if !strings.Contains(output, "Opus savings") {
+		t.Error("expected output to contain 'Opus savings'")
+	}
+	if !strings.Contains(output, "/month") {
+		t.Error("expected output to contain '/month'")
+	}
+}
+
+func TestRunGainQuotaWithDaily(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	runErr := RunGain(tracker, config.EconomicsConfig{}, []string{"--daily", "--quota"})
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+
+	output := buf.String()
+	// Should have both the daily table and the quota projection
+	if !strings.Contains(output, "Date") {
+		t.Error("expected daily table headers")
+	}
+	if !strings.Contains(output, "Monthly projection") {
+		t.Error("expected quota projection section")
+	}
+}
+
+func TestRunGainQuotaNoData(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	runErr := RunGain(tracker, config.EconomicsConfig{}, []string{"--quota"})
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+
+	// With no data, the quota section should not appear (graceful skip)
+	output := buf.String()
+	if strings.Contains(output, "Monthly projection") {
+		t.Error("expected no quota projection when there is no data")
+	}
+}
+
+func TestFormatQuotaCost(t *testing.T) {
+	tests := []struct {
+		amount float64
+		want   string
+	}{
+		{0.25, "$0.25"},
+		{6.90, "$6.90"},
+		{15.00, "$15.0"},
+		{150.00, "$150"},
+	}
+	for _, tt := range tests {
+		got := formatQuotaCost(tt.amount)
+		if got != tt.want {
+			t.Errorf("formatQuotaCost(%.2f) = %q, want %q", tt.amount, got, tt.want)
+		}
+	}
+}
+
+func TestRunGainUnfilteredEmpty(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	runErr := RunGain(tracker, config.EconomicsConfig{}, []string{"--unfiltered"})
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Unfiltered commands") {
+		t.Error("expected 'Unfiltered commands' header")
+	}
+	// No unfiltered commands recorded, so should show the hint.
+	if !strings.Contains(output, "none recorded") {
+		t.Error("expected 'none recorded' hint when no unfiltered data")
+	}
+}
+
+func TestRunGainUnfilteredWithData(t *testing.T) {
+	tracker := newTestTracker(t)
+
+	// Record some unfiltered commands.
+	_ = tracker.TrackUnfiltered("cargo", "cargo build")
+	_ = tracker.TrackUnfiltered("cargo", "cargo build --release")
+	_ = tracker.TrackUnfiltered("make", "make all")
+
+	// Capture stdout
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	runErr := RunGain(tracker, config.EconomicsConfig{}, []string{"--unfiltered", "10"})
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "cargo") {
+		t.Error("expected 'cargo' in unfiltered output")
+	}
+	if !strings.Contains(output, "make") {
+		t.Error("expected 'make' in unfiltered output")
+	}
+}
+
+// TestRunGainQuotaUsesEconomicsPricing pins the --quota projection to the
+// shared tier table (issue #186): it used to carry its own stale prices,
+// reporting Opus savings 3x above what cc-economics computed from the same
+// database. seedTracker saves 3220 tokens on a single active day, so the
+// projection is 96_600 tokens/month.
+func TestRunGainQuotaUsesEconomicsPricing(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	output := captureGain(t, tracker, config.EconomicsConfig{}, []string{"--quota"})
+
+	want := map[string]string{
+		"Haiku":  "$0.10", // 1.00/M, not the stale 0.25/M ($0.02)
+		"Sonnet": "$0.29",
+		"Opus":   "$0.48", // 5.00/M, not the stale 15.00/M ($1.45)
+		"Fable":  "$0.97", // tier was missing from the quota table entirely
+	}
+	for name, cost := range want {
+		line := name + " savings"
+		if !strings.Contains(output, line) {
+			t.Errorf("expected %q in output", line)
+			continue
+		}
+		if !strings.Contains(output, cost+"/month") {
+			t.Errorf("%s: expected %s/month in output, got:\n%s", name, cost, output)
+		}
+	}
+	if !strings.Contains(output, "Assumes saved tokens are input tokens") {
+		t.Error("expected the pricing assumption disclosure cc-economics prints")
+	}
+}
+
+// TestRunGainQuotaHonorsConfigTiers verifies --quota reads [economics.tiers]
+// instead of a hardcoded table.
+func TestRunGainQuotaHonorsConfigTiers(t *testing.T) {
+	tracker := newTestTracker(t)
+	seedTracker(t, tracker)
+
+	ecoCfg := config.EconomicsConfig{Tiers: map[string]float64{"Negotiated": 2.00}}
+	output := captureGain(t, tracker, ecoCfg, []string{"--quota"})
+
+	if !strings.Contains(output, "Negotiated savings") {
+		t.Errorf("expected configured tier in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "Opus savings") {
+		t.Errorf("expected configured tiers to replace the defaults, got:\n%s", output)
+	}
+}
+
+// captureGain runs RunGain with stdout redirected and returns what it printed.
+func captureGain(t *testing.T, tracker *tracking.Tracker, ecoCfg config.EconomicsConfig, args []string) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	runErr := RunGain(tracker, ecoCfg, args)
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("unexpected error: %v", runErr)
+	}
+	return buf.String()
+}

@@ -1,0 +1,1166 @@
+package cli
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/edouard-claude/snip/internal/testutil"
+	"github.com/edouard-claude/snip/internal/trust"
+)
+
+// captureStderr captures stderr during fn execution and returns the captured output.
+func captureStderr(fn func()) string {
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	fn()
+	_ = w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
+
+// captureStdout captures stdout during fn execution and returns the captured output.
+func captureStdout(fn func()) string {
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	fn()
+	_ = w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
+
+// TestUsageDocumentsInitFlags guards against init flags implemented in
+// initcmd but missing from the help text (issue #162).
+func TestUsageDocumentsInitFlags(t *testing.T) {
+	out := captureStdout(printUsage)
+	for _, flag := range []string{"--agent", "--mode", "--uninstall"} {
+		if !strings.Contains(out, flag) {
+			t.Errorf("printUsage does not document init flag %s", flag)
+		}
+	}
+}
+
+func TestUnproxyableCommands(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{"cd", true},
+		{"chdir", true},
+		{"pushd", true},
+		{"popd", true},
+		{"source", true},
+		{".", true},
+		{"export", true},
+		{"unset", true},
+		{"alias", true},
+		{"unalias", true},
+		{"readonly", true},
+		{"declare", true},
+		{"typeset", true},
+		{"local", true},
+		{"shift", true},
+		{"read", true},
+		{"mapfile", true},
+		{"readarray", true},
+		{"let", true},
+		{"getopts", true},
+		{"set", true},
+		{"shopt", true},
+		{"setopt", true},
+		{"unsetopt", true},
+		{"emulate", true},
+		{"eval", true},
+		{"exec", true},
+		{"exit", true},
+		{"logout", true},
+		{"return", true},
+		{"break", true},
+		{"continue", true},
+		{"wait", true},
+		{"bg", true},
+		{"fg", true},
+		{"disown", true},
+		{"jobs", true},
+		{"suspend", true},
+		{"bindkey", true},
+		{"bind", true},
+		{"complete", true},
+		{"compopt", true},
+		{"compinit", true},
+		{"zstyle", true},
+		{"autoload", true},
+		{"zmodload", true},
+		{"enable", true},
+		{"disable", true},
+		{"abbr", true},
+		{"functions", true},
+		{"hash", true},
+		{"trap", true},
+		{"umask", true},
+		{"ulimit", true},
+		// Shell keyword constructs
+		{"for", true},
+		{"while", true},
+		{"until", true},
+		{"select", true},
+		{"if", true},
+		{"case", true},
+		{"fi", true},
+		{"esac", true},
+		{"then", true},
+		{"elif", true},
+		{"else", true},
+		{"done", true},
+		{"do", true},
+		{"perform", false}, // contains "for" but isn't the keyword
+		{"git", false},
+		{"go", false},
+		{"docker", false},
+		{"echo", false},
+		{"printf", false},
+		{"pwd", false},
+		{"test", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.command, func(t *testing.T) {
+			got := unproxyableReason(tt.command) != ""
+			if got != tt.want {
+				t.Errorf("unproxyableReason(%q) returned %q, wantBlocked=%v", tt.command, unproxyableReason(tt.command), tt.want)
+			}
+		})
+	}
+}
+
+func TestRunSubcommandMissingSeparator(t *testing.T) {
+	code := Run([]string{"snip", "run", "git", "log"})
+	if code != 1 {
+		t.Errorf("Run(run without --) = %d, want 1", code)
+	}
+}
+
+func TestRunSubcommandEmptyAfterSeparator(t *testing.T) {
+	code := Run([]string{"snip", "run", "--"})
+	if code != 1 {
+		t.Errorf("Run(run --) = %d, want 1", code)
+	}
+}
+
+func TestRunSubcommandRejectsUnproxyable(t *testing.T) {
+	code := Run([]string{"snip", "run", "--", "cd", "/tmp"})
+	if code != 1 {
+		t.Errorf("Run(run -- cd) = %d, want 1", code)
+	}
+}
+
+func TestRunSubcommandRejectsArgsBeforeSeparator(t *testing.T) {
+	code := Run([]string{"snip", "run", "foo", "--", "bar"})
+	if code != 1 {
+		t.Errorf("Run(run foo -- bar) = %d, want 1", code)
+	}
+}
+
+func TestRunGlobalHelpBeforeSeparator(t *testing.T) {
+	code := Run([]string{"snip", "run", "--help", "--", "foo", "bar"})
+	if code != 0 {
+		t.Errorf("Run(run --help -- foo bar) = %d, want 0", code)
+	}
+}
+
+func TestRunSubcommandWithFlags(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"-v", "run", "--", "git", "log", "-10"})
+	if flags.Verbose != 1 {
+		t.Errorf("flags.Verbose = %d, want 1", flags.Verbose)
+	}
+	wantRemaining := []string{"run", "--", "git", "log", "-10"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestCheckMissingSeparator(t *testing.T) {
+	code := Run([]string{"snip", "check", "git", "log"})
+	if code != 1 {
+		t.Errorf("Run(check without --) = %d, want 1", code)
+	}
+}
+
+func TestCheckEmptyAfterSeparator(t *testing.T) {
+	code := Run([]string{"snip", "check", "--"})
+	if code != 1 {
+		t.Errorf("Run(check --) = %d, want 1", code)
+	}
+}
+
+func TestCheckRejectsArgsBeforeSeparator(t *testing.T) {
+	code := Run([]string{"snip", "check", "foo", "--", "bar"})
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestProxyAcceptsSeparator(t *testing.T) {
+	code := Run([]string{"snip", "proxy", "--", "true"})
+	if code != 0 {
+		t.Errorf("Run(proxy -- true) = %d, want 0", code)
+	}
+}
+
+func TestProxyPreservesExitCodeWithSeparator(t *testing.T) {
+	// Distinctive exit code: 1 would collide with snip's own error return.
+	code := Run([]string{"snip", "proxy", "--", "sh", "-c", "exit 3"})
+	if code != 3 {
+		t.Errorf("Run(proxy -- sh -c 'exit 3') = %d, want 3", code)
+	}
+}
+
+func TestProxyEmptyAfterSeparator(t *testing.T) {
+	var code int
+	stderr := captureStderr(func() {
+		code = Run([]string{"snip", "proxy", "--"})
+	})
+	if code != 1 {
+		t.Errorf("Run(proxy --) = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, "proxy requires a command argument") {
+		t.Errorf("expected usage error on stderr, got %q", stderr)
+	}
+}
+
+func TestProxyWithoutSeparator(t *testing.T) {
+	code := Run([]string{"snip", "proxy", "true"})
+	if code != 0 {
+		t.Errorf("Run(proxy true) = %d, want 0", code)
+	}
+}
+
+func TestProxyKeepsNonLeadingSeparator(t *testing.T) {
+	// Only a leading "--" is stripped; a later one belongs to the child.
+	code := Run([]string{"snip", "proxy", "sh", "-c", `test "$1" = "--"`, "_", "--"})
+	if code != 0 {
+		t.Errorf("Run(proxy sh -c 'test $1 = --' _ --) = %d, want 0", code)
+	}
+}
+
+func TestCheckNoFilter(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "ls", "-la"})
+	_ = w.Close()
+	os.Stdout = old
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "no filter") {
+		t.Errorf("expected output to contain 'no filter', got %q", buf.String())
+	}
+}
+
+func TestCheckExcludedByFlags(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	filterYAML := `name: "git-log"
+version: 1
+description: "Test filter"
+match:
+  command: "git"
+  subcommand: "log"
+  exclude_flags: ["--format", "--pretty", "--graph", "--oneline"]
+inject:
+  args: ["--pretty=format:%h %s", "--no-merges"]
+  defaults:
+    "-n": "10"
+  skip_if_present: ["--merges", "--format", "--pretty", "--oneline"]
+pipeline:
+  - action: "keep_lines"
+    pattern: "\\S"
+on_error: "passthrough"
+`
+	if err := os.WriteFile(filepath.Join(filterDir, "git-log.yaml"), []byte(filterYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "git", "log", "--pretty"})
+	_ = w.Close()
+	os.Stdout = old
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "excluded by flags") {
+		t.Errorf("expected output to contain 'excluded by flags', got %q", buf.String())
+	}
+}
+
+func TestCheckFilterFoundOutput(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	filterYAML := `name: "git-log"
+version: 1
+description: "Test filter"
+match:
+  command: "git"
+  subcommand: "log"
+  exclude_flags: ["--format", "--pretty", "--graph", "--oneline"]
+inject:
+  args: ["--pretty=format:%h %s", "--no-merges"]
+  defaults:
+    "-n": "10"
+  skip_if_present: ["--merges", "--format", "--pretty", "--oneline"]
+pipeline:
+  - action: "keep_lines"
+    pattern: "\\S"
+on_error: "passthrough"
+`
+	if err := os.WriteFile(filepath.Join(filterDir, "git-log.yaml"), []byte(filterYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "git", "log"})
+	_ = w.Close()
+	os.Stdout = old
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "filter: git-log") {
+		t.Errorf("expected output to contain 'filter: git-log', got %q", buf.String())
+	}
+}
+
+func TestParseSeparatorArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		cmdName  string
+		wantCmd  string
+		wantArgs []string
+		wantErr  string
+	}{
+		{
+			name:     "normal case",
+			args:     []string{"--", "git", "log", "-10"},
+			cmdName:  "run",
+			wantCmd:  "git",
+			wantArgs: []string{"log", "-10"},
+			wantErr:  "",
+		},
+		{
+			name:     "single command after separator",
+			args:     []string{"--", "docker"},
+			cmdName:  "run",
+			wantCmd:  "docker",
+			wantArgs: []string{},
+			wantErr:  "",
+		},
+		{
+			name:     "no separator",
+			args:     []string{"git", "log"},
+			cmdName:  "run",
+			wantCmd:  "",
+			wantArgs: nil,
+			wantErr:  "run requires -- separator: snip run -- <command> [args...]",
+		},
+		{
+			name:     "empty after separator",
+			args:     []string{"--"},
+			cmdName:  "run",
+			wantCmd:  "",
+			wantArgs: nil,
+			wantErr:  "run requires a command after --",
+		},
+		{
+			name:     "args before separator",
+			args:     []string{"foo", "--", "bar"},
+			cmdName:  "run",
+			wantCmd:  "",
+			wantArgs: nil,
+			wantErr:  "run: unexpected arguments before -- (foo)",
+		},
+		{
+			name:     "command with embedded double dash",
+			args:     []string{"--", "git", "--", "log"},
+			cmdName:  "run",
+			wantCmd:  "git",
+			wantArgs: []string{"--", "log"},
+			wantErr:  "",
+		},
+		{
+			name:     "check command name in error",
+			args:     []string{"git"},
+			cmdName:  "check",
+			wantCmd:  "",
+			wantArgs: nil,
+			wantErr:  "check requires -- separator: snip check -- <command> [args...]",
+		},
+		{
+			name:     "check empty after separator",
+			args:     []string{"--"},
+			cmdName:  "check",
+			wantCmd:  "",
+			wantArgs: nil,
+			wantErr:  "check requires a command after --",
+		},
+		{
+			name:     "multiple args before separator",
+			args:     []string{"-v", "extra", "--", "git", "log"},
+			cmdName:  "run",
+			wantCmd:  "",
+			wantArgs: nil,
+			wantErr:  "run: unexpected arguments before -- (-v extra)",
+		},
+		{
+			name:     "separator is second arg",
+			args:     []string{"-v", "--", "git", "log"},
+			cmdName:  "run",
+			wantCmd:  "",
+			wantArgs: nil,
+			wantErr:  "run: unexpected arguments before -- (-v)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, args, errMsg := parseSeparatorArgs(tt.args, tt.cmdName)
+			if cmd != tt.wantCmd {
+				t.Errorf("cmd = %q, want %q", cmd, tt.wantCmd)
+			}
+			if !reflect.DeepEqual(args, tt.wantArgs) {
+				t.Errorf("args = %v, want %v", args, tt.wantArgs)
+			}
+			if errMsg != tt.wantErr {
+				t.Errorf("errMsg = %q, want %q", errMsg, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCheckWithCommandOnlyFilter(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	filterYAML := `name: "docker-all"
+version: 1
+description: "Docker filter"
+match:
+  command: "docker"
+pipeline:
+  - action: "keep_lines"
+    pattern: "\\S"
+on_error: "passthrough"
+`
+	if err := os.WriteFile(filepath.Join(filterDir, "docker-all.yaml"), []byte(filterYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "docker", "build", "-t", "app", "."})
+	_ = w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "filter: docker-all") {
+		t.Errorf("expected output to contain 'filter: docker-all', got %q", buf.String())
+	}
+}
+
+func TestCheckWithRequireFlagsMatches(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	filterYAML := `name: "go-test-json"
+version: 1
+description: "Go test JSON filter"
+match:
+  command: "go"
+  subcommand: "test"
+  require_flags: ["-json"]
+pipeline:
+  - action: "keep_lines"
+    pattern: "\\S"
+on_error: "passthrough"
+`
+	if err := os.WriteFile(filepath.Join(filterDir, "go-test-json.yaml"), []byte(filterYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "go", "test", "-json"})
+	_ = w.Close()
+	os.Stdout = old
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "filter: go-test-json") {
+		t.Errorf("expected output to contain 'filter: go-test-json', got %q", buf.String())
+	}
+}
+
+func TestCheckWithRequireFlagsExcluded(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	filterYAML := `name: "go-test-json"
+version: 1
+description: "Go test JSON filter"
+match:
+  command: "go"
+  subcommand: "test"
+  require_flags: ["-json"]
+pipeline:
+  - action: "keep_lines"
+    pattern: "\\S"
+on_error: "passthrough"
+`
+	if err := os.WriteFile(filepath.Join(filterDir, "go-test-json.yaml"), []byte(filterYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "go", "test", "-v"})
+	_ = w.Close()
+	os.Stdout = old
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "no filter: excluded by flags") {
+		t.Errorf("expected output to contain 'no filter: excluded by flags', got %q", buf.String())
+	}
+}
+
+func TestCheckBareCommandNoFilter(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "git"})
+	_ = w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "no filter") {
+		t.Errorf("expected output to contain 'no filter', got %q", buf.String())
+	}
+}
+
+func TestCheckFilterExplicitlyEnabled(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	filterYAML := `name: "git-log"
+version: 1
+description: "Test filter"
+match:
+  command: "git"
+  subcommand: "log"
+pipeline:
+  - action: "keep_lines"
+    pattern: "\\S"
+on_error: "passthrough"
+`
+	if err := os.WriteFile(filepath.Join(filterDir, "git-log.yaml"), []byte(filterYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configContent := `[filters]
+[filters.enable]
+git-log = true
+`
+	if err := os.WriteFile(filepath.Join(home, ".config", "snip", "config.toml"), []byte(configContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "git", "log"})
+	_ = w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 0 {
+		t.Errorf("expected exit code 0, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "filter: git-log") {
+		t.Errorf("expected output to contain 'filter: git-log', got %q", buf.String())
+	}
+}
+
+func TestCheckFilterDisabled(t *testing.T) {
+	home := t.TempDir()
+	filterDir := filepath.Join(home, ".config", "snip", "filters")
+	if err := os.MkdirAll(filterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	filterYAML := `name: "git-log"
+version: 1
+description: "Test filter"
+match:
+  command: "git"
+  subcommand: "log"
+  exclude_flags: ["--format", "--pretty", "--graph", "--oneline"]
+inject:
+  args: ["--pretty=format:%h %s", "--no-merges"]
+  defaults:
+    "-n": "10"
+  skip_if_present: ["--merges", "--format", "--pretty", "--oneline"]
+pipeline:
+  - action: "keep_lines"
+    pattern: "\\S"
+on_error: "passthrough"
+`
+	if err := os.WriteFile(filepath.Join(filterDir, "git-log.yaml"), []byte(filterYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configContent := `[filters]
+[filters.enable]
+git-log = false
+`
+	if err := os.WriteFile(filepath.Join(home, ".config", "snip", "config.toml"), []byte(configContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", filepath.Join(home, ".config", "snip", "config.toml"))
+
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "check", "--", "git", "log"})
+	_ = w.Close()
+	os.Stdout = old
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "filter disabled: git-log") {
+		t.Errorf("expected output to contain 'filter disabled: git-log', got %q", buf.String())
+	}
+}
+
+func TestCheckAndRunUnproxyableFormatConsistent(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"check cd", []string{"snip", "check", "--", "cd", "/tmp"}},
+		{"run cd", []string{"snip", "run", "--", "cd", "/tmp"}},
+		{"global cd", []string{"snip", "cd", "/tmp"}},
+		{"check source", []string{"snip", "check", "--", "source", "script.sh"}},
+		{"run source", []string{"snip", "run", "--", "source", "script.sh"}},
+		{"global source", []string{"snip", "source", "script.sh"}},
+		{"check dot", []string{"snip", "check", "--", ".", "script.sh"}},
+		{"run dot", []string{"snip", "run", "--", ".", "script.sh"}},
+		{"global dot", []string{"snip", ".", "script.sh"}},
+		{"check export", []string{"snip", "check", "--", "export", "FOO=bar"}},
+		{"run export", []string{"snip", "run", "--", "export", "FOO=bar"}},
+		{"global export", []string{"snip", "export", "FOO=bar"}},
+		{"check eval", []string{"snip", "check", "--", "eval", "echo hi"}},
+		{"run eval", []string{"snip", "run", "--", "eval", "echo hi"}},
+		{"global eval", []string{"snip", "eval", "echo hi"}},
+		{"check set", []string{"snip", "check", "--", "set", "-e"}},
+		{"run set", []string{"snip", "run", "--", "set", "-e"}},
+		{"global set", []string{"snip", "set", "-e"}},
+		{"check exit", []string{"snip", "check", "--", "exit"}},
+		{"run exit", []string{"snip", "run", "--", "exit"}},
+		{"global exit", []string{"snip", "exit"}},
+		{"check exec", []string{"snip", "check", "--", "exec", "ls"}},
+		{"run exec", []string{"snip", "run", "--", "exec", "ls"}},
+		{"global exec", []string{"snip", "exec", "ls"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := captureStderr(func() {
+				code := Run(tt.args)
+				if code != 1 {
+					t.Errorf("expected exit code 1, got %d", code)
+				}
+			})
+			if !strings.Contains(output, "cannot be proxied") {
+				t.Errorf("expected stderr to contain 'cannot be proxied', got %q", output)
+			}
+		})
+	}
+}
+
+func TestRunSubcommandRejectsArgsBeforeSeparatorErrorMessage(t *testing.T) {
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	code := Run([]string{"snip", "run", "-v", "--", "git", "log"})
+	_ = w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "unexpected arguments before --") {
+		t.Errorf("expected stderr to contain 'unexpected arguments before --', got %q", output)
+	}
+}
+
+func TestCheckSubcommandRejectsArgsBeforeSeparatorErrorMessage(t *testing.T) {
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	code := Run([]string{"snip", "check", "-v", "--", "git", "log"})
+	_ = w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+	output := buf.String()
+	if !strings.Contains(output, "unexpected arguments before --") {
+		t.Errorf("expected stderr to contain 'unexpected arguments before --', got %q", output)
+	}
+}
+
+func TestRunSubcommandNoArgs(t *testing.T) {
+	code := Run([]string{"snip", "run"})
+	if code != 1 {
+		t.Errorf("Run(run with no args) = %d, want 1", code)
+	}
+}
+
+func TestCheckSubcommandNoArgs(t *testing.T) {
+	code := Run([]string{"snip", "check"})
+	if code != 1 {
+		t.Errorf("Run(check with no args) = %d, want 1", code)
+	}
+}
+
+func TestParseFlagsHelpNotConsumedAfterSeparator(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"run", "--", "git", "--help"})
+	if flags.Help {
+		t.Errorf("flags.Help = true, want false (--help after -- should be a command arg)")
+	}
+	wantRemaining := []string{"run", "--", "git", "--help"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestParseFlagsVersionNotConsumedAfterSeparator(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"run", "--", "git", "--version"})
+	if flags.Version {
+		t.Errorf("flags.Version = true, want false (--version after -- should be a command arg)")
+	}
+	wantRemaining := []string{"run", "--", "git", "--version"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestParseFlagsHelpConsumedBeforeSeparatorForRun(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"run", "--help", "--", "git", "log"})
+	if !flags.Help {
+		t.Errorf("flags.Help = false, want true (--help before -- should be snip flag)")
+	}
+	wantRemaining := []string{"run", "git", "log"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestParseFlagsVersionConsumedBeforeSeparatorForRun(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"run", "--version", "--", "git", "log"})
+	if !flags.Version {
+		t.Errorf("flags.Version = false, want true (--version before -- should be snip flag)")
+	}
+	wantRemaining := []string{"run", "git", "log"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestParseFlagsHelpConsumedBeforeSeparatorForCheck(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"check", "--help", "--", "git", "log"})
+	if !flags.Help {
+		t.Errorf("flags.Help = false, want true")
+	}
+	wantRemaining := []string{"check", "git", "log"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestParseFlagsHelpNotConsumedAfterSeparatorForCheck(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"check", "--", "git", "--help"})
+	if flags.Help {
+		t.Errorf("flags.Help = true, want false (--help after -- should be a command arg)")
+	}
+	wantRemaining := []string{"check", "--", "git", "--help"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestParseSeparatorArgsFindsFirstSeparator(t *testing.T) {
+	cmd, args, errMsg := parseSeparatorArgs([]string{"--", "git", "--", "log"}, "run")
+	if errMsg != "" {
+		t.Errorf("unexpected error: %q", errMsg)
+	}
+	if cmd != "git" {
+		t.Errorf("cmd = %q, want %q", cmd, "git")
+	}
+	if !reflect.DeepEqual(args, []string{"--", "log"}) {
+		t.Errorf("args = %v, want [--, log]", args)
+	}
+}
+
+func TestRunSubcommandPreservesDoubleDash(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"run", "--", "git", "--", "log"})
+	if flags.Help {
+		t.Errorf("flags.Help = true, want false")
+	}
+	wantRemaining := []string{"run", "--", "git", "--", "log"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestCheckSubcommandPreservesDoubleDash(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"check", "--", "git", "--", "log"})
+	if flags.Help {
+		t.Errorf("flags.Help = true, want false")
+	}
+	wantRemaining := []string{"check", "--", "git", "--", "log"}
+	if !reflect.DeepEqual(remaining, wantRemaining) {
+		t.Errorf("remaining = %v, want %v", remaining, wantRemaining)
+	}
+}
+
+func TestRunCommandHelpAfterSeparator(t *testing.T) {
+	code := Run([]string{"snip", "run", "--", "git", "--help"})
+	if code != 0 {
+		t.Errorf("Run(run -- git --help) = %d, want 0", code)
+	}
+}
+
+// TestConfigShowsMergedConfig verifies that `snip config` prints the
+// effective merged configuration with its layer sources (issue #161).
+func TestConfigShowsMergedConfig(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".config", "snip", "filters"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	userPath := filepath.Join(home, ".config", "snip", "config.toml")
+	userContent := `[filters]
+transparent_prefixes = ["poetry run"]
+
+[filters.global]
+max_lines = 100
+`
+	if err := os.WriteFile(userPath, []byte(userContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, ".snip"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectCfgPath := filepath.Join(projectDir, ".snip", "config.toml")
+	projectContent := `mode = "project"
+
+[filters.global]
+max_lines = 50
+
+[filters.override.pyright]
+stream_mode = "full"
+
+[filters.bypass]
+commands = ["terraform"]
+`
+	if err := os.WriteFile(projectCfgPath, []byte(projectContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := make(trust.Store)
+	hash, err := trust.HashFile(projectCfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store[projectCfgPath] = hash
+	if err := trust.SaveTo(store, filepath.Join(home, ".config", "snip", "trusted.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.SetHome(t, home)
+	t.Setenv("SNIP_CONFIG", userPath)
+	t.Setenv("SNIP_PLUGIN_CONFIG", "")
+	oldWd, _ := os.Getwd()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	var buf bytes.Buffer
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	code := Run([]string{"snip", "config"})
+	_ = w.Close()
+	os.Stdout = old
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("ReadFrom: %v", err)
+	}
+	out := buf.String()
+
+	if code != 0 {
+		t.Fatalf("Run(config) = %d, want 0", code)
+	}
+	for _, want := range []string{
+		"mode: project",
+		"filters.global.max_lines: 50",
+		"filters.override.pyright: stream_mode=full",
+		"filters.bypass.commands: terraform",
+		"filters.transparent_prefixes: poetry run",
+		"tee.enabled: true",
+		"tee.max_file_size: 1048576",
+		"user: " + userPath,
+		"project: " + projectCfgPath,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\noutput:\n%s", want, out)
+		}
+	}
+}
+
+func TestVersion(t *testing.T) {
+	v := Version()
+	if v == "" {
+		t.Error("Version() should not return empty string")
+	}
+}
+
+func TestBuildCommandString(t *testing.T) {
+	tests := []struct {
+		command string
+		args    []string
+		want    string
+	}{
+		{"git", nil, "git"},
+		{"git", []string{}, "git"},
+		{"git", []string{"log", "-10"}, "git log -10"},
+		{"docker", []string{"ps", "-a"}, "docker ps -a"},
+	}
+	for _, tt := range tests {
+		got := BuildCommandString(tt.command, tt.args)
+		if got != tt.want {
+			t.Errorf("BuildCommandString(%q, %v) = %q, want %q", tt.command, tt.args, got, tt.want)
+		}
+	}
+}
+
+func TestRunTrustWithFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	testutil.SetHome(t, tmpHome)
+
+	// Create a YAML filter file to trust.
+	dir := t.TempDir()
+	filterPath := filepath.Join(dir, "filter.yaml")
+	if err := os.WriteFile(filterPath, []byte("name: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code := runTrust([]string{filterPath})
+	if code != 0 {
+		t.Errorf("runTrust: expected exit 0, got %d", code)
+	}
+}
+
+func TestRunUntrustWithFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	testutil.SetHome(t, tmpHome)
+
+	// Trust a file first.
+	dir := t.TempDir()
+	filterPath := filepath.Join(dir, "filter.yaml")
+	if err := os.WriteFile(filterPath, []byte("name: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code := runTrust([]string{filterPath})
+	if code != 0 {
+		t.Fatalf("runTrust: %d", code)
+	}
+
+	// Now untrust it.
+	code = runUntrust([]string{filterPath})
+	if code != 0 {
+		t.Errorf("runUntrust: expected exit 0, got %d", code)
+	}
+}
+
+func TestRunTrustWithDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	testutil.SetHome(t, tmpHome)
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "test.yaml"), []byte("name: test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code := runTrust([]string{dir})
+	if code != 0 {
+		t.Errorf("runTrust with dir: expected exit 0, got %d", code)
+	}
+}
+
+func TestRunTrustWithEmptyDir(t *testing.T) {
+	tmpHome := t.TempDir()
+	testutil.SetHome(t, tmpHome)
+
+	dir := t.TempDir()
+	// Empty directory — no YAML files, so runTrust should fail.
+	code := runTrust([]string{dir})
+	if code != 1 {
+		t.Errorf("runTrust with empty dir: expected exit 1, got %d", code)
+	}
+}
+
+func TestRunTrustNonexistent(t *testing.T) {
+	tmpHome := t.TempDir()
+	testutil.SetHome(t, tmpHome)
+
+	code := runTrust([]string{"/nonexistent/file.yaml"})
+	if code != 1 {
+		t.Errorf("runTrust nonexistent: expected exit 1, got %d", code)
+	}
+}

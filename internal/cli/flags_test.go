@@ -1,0 +1,223 @@
+package cli
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestParseFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantFlags Flags
+		wantArgs  []string
+	}{
+		{
+			name:      "no flags",
+			args:      []string{"git", "log"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"git", "log"},
+		},
+		{
+			name:      "verbose",
+			args:      []string{"-v", "git", "log"},
+			wantFlags: Flags{Verbose: 1},
+			wantArgs:  []string{"git", "log"},
+		},
+		{
+			name:      "double verbose",
+			args:      []string{"-vv", "git", "log"},
+			wantFlags: Flags{Verbose: 2},
+			wantArgs:  []string{"git", "log"},
+		},
+		{
+			name:      "ultra compact",
+			args:      []string{"-u", "git", "log"},
+			wantFlags: Flags{UltraCompact: true},
+			wantArgs:  []string{"git", "log"},
+		},
+		{
+			name:      "version",
+			args:      []string{"--version"},
+			wantFlags: Flags{Version: true},
+			wantArgs:  nil,
+		},
+		{
+			name:      "help",
+			args:      []string{"--help"},
+			wantFlags: Flags{Help: true},
+			wantArgs:  nil,
+		},
+		{
+			name:      "version after command is passed through",
+			args:      []string{"bun", "--version"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"bun", "--version"},
+		},
+		{
+			name:      "global flags with version after command",
+			args:      []string{"-v", "go", "--version"},
+			wantFlags: Flags{Verbose: 1},
+			wantArgs:  []string{"go", "--version"},
+		},
+		{
+			name:      "built-in command help is preserved",
+			args:      []string{"proxy", "--help"},
+			wantFlags: Flags{Help: true},
+			wantArgs:  []string{"proxy"},
+		},
+		{
+			name:      "built-in command keeps its own flags",
+			args:      []string{"gain", "--daily"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"gain", "--daily"},
+		},
+		{
+			name:      "mixed flags and args",
+			args:      []string{"-v", "-u", "git", "status"},
+			wantFlags: Flags{Verbose: 1, UltraCompact: true},
+			wantArgs:  []string{"git", "status"},
+		},
+		{
+			name:      "command help flag is passed through",
+			args:      []string{"npx", "-y", "chrome-devtools-mcp@latest", "--help"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"npx", "-y", "chrome-devtools-mcp@latest", "--help"},
+		},
+		{
+			name:      "global flags stop parsing at command",
+			args:      []string{"-v", "npx", "-y", "chrome-devtools-mcp@latest", "--help"},
+			wantFlags: Flags{Verbose: 1},
+			wantArgs:  []string{"npx", "-y", "chrome-devtools-mcp@latest", "--help"},
+		},
+		{
+			name:      "global flags still allow built-in command help",
+			args:      []string{"-v", "proxy", "--help"},
+			wantFlags: Flags{Verbose: 1, Help: true},
+			wantArgs:  []string{"proxy"},
+		},
+		// "--" separator: everything after it is passed verbatim to the command.
+		{
+			name:      "double dash passes remaining verbatim",
+			args:      []string{"--", "opencode", "--help"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"opencode", "--help"},
+		},
+		{
+			name:      "snip flags before double dash, command flags after",
+			args:      []string{"-v", "--", "go", "test", "--version"},
+			wantFlags: Flags{Verbose: 1},
+			wantArgs:  []string{"go", "test", "--version"},
+		},
+		{
+			name:      "double dash alone produces empty remaining",
+			args:      []string{"--"},
+			wantFlags: Flags{},
+			wantArgs:  nil,
+		},
+		{
+			name:      "double dash before --help prevents snip help",
+			args:      []string{"--", "--help"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"--help"},
+		},
+		{
+			name:      "double dash before -v prevents snip verbose",
+			args:      []string{"--", "-v", "git", "log"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"-v", "git", "log"},
+		},
+		{
+			name:      "run is a built-in command",
+			args:      []string{"run", "--", "git", "log"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"run", "--", "git", "log"},
+		},
+		{
+			name:      "run with snip flags before it",
+			args:      []string{"-v", "run", "--", "git", "log"},
+			wantFlags: Flags{Verbose: 1},
+			wantArgs:  []string{"run", "--", "git", "log"},
+		},
+		{
+			name:      "check is a built-in command",
+			args:      []string{"check", "--", "git", "log"},
+			wantFlags: Flags{},
+			wantArgs:  []string{"check", "--", "git", "log"},
+		},
+		{
+			name:      "check with snip flags before it",
+			args:      []string{"-v", "check", "--", "git", "log"},
+			wantFlags: Flags{Verbose: 1},
+			wantArgs:  []string{"check", "--", "git", "log"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags, args := ParseFlags(tt.args)
+			if !reflect.DeepEqual(flags, tt.wantFlags) {
+				t.Errorf("flags = %+v, want %+v", flags, tt.wantFlags)
+			}
+			if !reflect.DeepEqual(args, tt.wantArgs) {
+				t.Errorf("args = %v, want %v", args, tt.wantArgs)
+			}
+		})
+	}
+}
+
+func TestParseFlagsPluginConfig(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"--plugin-config", "/plug/config.toml", "run", "--", "git", "status"})
+	if flags.PluginConfig != "/plug/config.toml" {
+		t.Errorf("PluginConfig: got %q, want /plug/config.toml", flags.PluginConfig)
+	}
+	if len(remaining) != 4 || remaining[0] != "run" || remaining[1] != "--" {
+		t.Errorf("remaining: got %v, want [run -- git status]", remaining)
+	}
+}
+
+func TestParseFlagsPluginConfigMissingValue(t *testing.T) {
+	flags, remaining := ParseFlags([]string{"--plugin-config"})
+	if flags.PluginConfig != "" {
+		t.Errorf("PluginConfig: got %q, want empty", flags.PluginConfig)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("remaining: got %v, want empty", remaining)
+	}
+}
+
+func TestIsStackedVerboseFlag(t *testing.T) {
+	tests := []struct {
+		arg  string
+		want bool
+	}{
+		{"-v", true},
+		{"-vv", true},
+		{"-vvv", true},
+		{"-vvvv", true},
+		{"-x", false},
+		{"--verbose", false},
+		{"-vx", false},
+		{"-", false},
+		{"v", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		got := isStackedVerboseFlag(tt.arg)
+		if got != tt.want {
+			t.Errorf("isStackedVerboseFlag(%q) = %v, want %v", tt.arg, got, tt.want)
+		}
+	}
+}
+
+func TestIsBuiltInCommand(t *testing.T) {
+	if !isBuiltInCommand("run") {
+		t.Error("run should be built-in")
+	}
+	if !isBuiltInCommand("trust") {
+		t.Error("trust should be built-in")
+	}
+	if isBuiltInCommand("git") {
+		t.Error("git should not be built-in")
+	}
+}

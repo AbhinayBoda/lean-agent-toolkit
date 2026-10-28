@@ -1,0 +1,23 @@
+name: "gh-pr"
+version: 1
+description: "Condensed gh pr output: PR list/view summary"
+
+match:
+  command: "gh"
+  subcommand: "pr"
+  # `gh pr diff` emits a unified diff, not a PR list. Condensing it (head + "...
+  # more PRs") truncates the diff and breaks review/comparison flows, so let it
+  # pass through untouched. See issue #87.
+  exclude_flags: ["diff"]
+
+pipeline:
+  - action: "strip_ansi"
+  - action: "remove_lines"
+    pattern: "^\\s*$"
+  - action: "truncate_lines"
+    max: 120
+  - action: "head"
+    n: 30
+    overflow_msg: "... more PRs"
+
+on_error: "passthrough"

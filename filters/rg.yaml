@@ -1,0 +1,16 @@
+name: "rg"
+version: 2
+description: "Condensed ripgrep output: limits results"
+
+match:
+  command: "rg"
+
+pipeline:
+  - action: "strip_ansi"
+  - action: "truncate_lines"
+    max: 120
+  - action: "head"
+    n: 50
+    overflow_msg: "... more matches"
+
+on_error: "passthrough"
