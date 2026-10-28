@@ -1,0 +1,206 @@
+---
+description: What TOON is, when to use it, and a first encode/decode example with the TypeScript library.
+---
+
+# Getting Started
+
+## What Is TOON?
+
+**Token-Oriented Object Notation** is a compact, human-readable encoding of the JSON data model that minimizes tokens and makes structure easy for models to follow.
+
+TOON combines YAML's indentation-based structure for nested objects with CSV-style tabular forms for uniform data. Its sweet spot is uniform objects – same fields across items, whether in an array or keyed by ID – reaching CSV-like compactness while adding explicit structure that helps LLMs parse and validate data reliably.
+
+Think of it as a translation layer: use JSON programmatically, and encode it as TOON for LLM input – a drop-in, lossless representation of the JSON you already have.
+
+### Why TOON?
+
+LLM tokens cost money – and standard JSON is verbose. A weather forecast in TOON:
+
+```toon
+location:
+  city: Berlin
+  country: DE
+  units: metric
+alerts[2]: frost,wind
+forecast[3]{day,temp{min,max},condition,rainChance}:
+  Mon,-2,4,snow,80
+  Tue,1,7,cloudy,20
+  Wed,3,11,sunny,5
+```
+
+The same data as JSON – ~117 tokens against TOON's ~66:
+
+```json
+{
+  "location": {
+    "city": "Berlin",
+    "country": "DE",
+    "units": "metric"
+  },
+  "alerts": [
+    "frost",
+    "wind"
+  ],
+  "forecast": [
+    {
+      "day": "Mon",
+      "temp": {
+        "min": -2,
+        "max": 4
+      },
+      "condition": "snow",
+      "rainChance": 80
+    },
+    {
+      "day": "Tue",
+      "temp": {
+        "min": 1,
+        "max": 7
+      },
+      "condition": "cloudy",
+      "rainChance": 20
+    },
+    {
+      "day": "Wed",
+      "temp": {
+        "min": 3,
+        "max": 11
+      },
+      "condition": "sunny",
+      "rainChance": 5
+    }
+  ]
+}
+```
+
+TOON combines YAML's indentation for the `location` object, inline form for the primitive `alerts` array, and tabular form for the `forecast` array: `[3]` declares the array length (letting LLMs answer dataset-size questions and detect truncation), `{day,…}` declares the field names once, and each row streams comma-separated values. The uniform nested `temp` objects fold into the header as a [nested field group](/guide/format-overview#nested-field-groups) (`temp{min,max}`) while rows stay flat. Each form is chosen automatically from the data's shape.
+
+The pattern is the same throughout TOON: declare structure once, stream data compactly – landing close to CSV density with explicit structure preserved.
+
+Maps of uniform objects collapse as well: the [keyed tabular form](/guide/format-overview#keyed-tabular-objects) turns them into tables whose rows carry their own keys.
+
+## When Not to Use TOON
+
+TOON excels with arrays of uniform objects. Reach for something else when:
+
+- **Structures are deeply nested or non-uniform** (tabular eligibility ≈ 0%) – compact JSON often wins outright.
+- **Arrays are semi-uniform** (~40–60% eligibility) – savings shrink; stay on JSON if your pipeline already speaks it.
+- **Data is purely tabular** – CSV is smaller. TOON's ~5–10% overhead buys declared lengths, field lists, and delimiter scoping, which is a reliability trade, not a size one.
+- **Latency dominates** – some deployments (notably local or quantized models) process compact JSON faster despite the higher token count. Measure TTFT and total time on your own setup.
+
+::: info
+For data-driven comparisons across different structures, see [Benchmarks](/guide/benchmarks). When optimizing for latency, measure TTFT, tokens/sec, and total time for both TOON and JSON-compact, and use whichever is faster in your specific environment.
+:::
+
+## Installation
+
+### TypeScript Library
+
+Install the library via your preferred package manager:
+
+::: code-group
+
+```bash [npm]
+npm install @toon-format/toon
+```
+
+```bash [pnpm]
+pnpm add @toon-format/toon
+```
+
+```bash [yarn]
+yarn add @toon-format/toon
+```
+
+:::
+
+### CLI
+
+The CLI can be used without installation via `npx`, or installed globally:
+
+::: code-group
+
+```bash [npx (no install)]
+npx @toon-format/cli input.json -o output.toon
+```
+
+```bash [npm]
+npm install -g @toon-format/cli
+```
+
+```bash [pnpm]
+pnpm add -g @toon-format/cli
+```
+
+```bash [yarn]
+yarn global add @toon-format/cli
+```
+
+:::
+
+For full CLI documentation, see the [CLI reference](/cli/).
+
+## Media Type & File Extension
+
+TOON files conventionally use the `.toon` extension. For HTTP transmission, the provisional media type is `text/toon`, always with UTF-8 encoding. While you may specify `charset=utf-8` explicitly, it's optional – UTF-8 is the default assumption. This follows the registration process outlined in [spec §17](https://github.com/toon-format/spec/blob/main/SPEC.md#17-iana-considerations).
+
+## Your First Example
+
+The examples below use the TypeScript library for demonstration, but the same operations work in any language with a TOON implementation.
+
+Let's encode a simple dataset with the TypeScript library:
+
+```ts
+import { encode } from '@toon-format/toon'
+
+const data = {
+  users: [
+    { id: 1, name: 'Ada', role: 'admin' },
+    { id: 2, name: 'Bob', role: 'user' }
+  ]
+}
+
+console.log(encode(data))
+```
+
+**Output:**
+
+```toon
+users[2]{id,name,role}:
+  1,Ada,admin
+  2,Bob,user
+```
+
+### Decoding Back to JSON
+
+Decoding is just as simple:
+
+```ts
+import { decode } from '@toon-format/toon'
+
+const toon = `
+users[2]{id,name,role}:
+  1,Ada,admin
+  2,Bob,user
+`
+
+const data = decode(toon)
+console.log(JSON.stringify(data, null, 2))
+```
+
+**Output:**
+
+```json
+{
+  "users": [
+    { "id": 1, "name": "Ada", "role": "admin" },
+    { "id": 2, "name": "Bob", "role": "user" }
+  ]
+}
+```
+
+Round-tripping is lossless: `decode(encode(x))` always equals `x` (after normalization of non-JSON types like `Date`, `NaN`, etc.).
+
+## Where to Go Next
+
+Now that you've seen your first TOON document, read the [Format Overview](/guide/format-overview) for complete syntax details (objects, arrays, tabular forms, quoting rules), then explore [Using TOON with LLMs](/guide/llm-prompts) to see how to use it effectively in prompts. For implementation details, check the [API Reference](/reference/api) (TypeScript) or the [Specification](/reference/spec) (language-agnostic normative rules).
