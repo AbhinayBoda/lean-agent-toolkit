@@ -83,7 +83,9 @@ The toolkit's own files are [MIT](LICENSE).
 This repository is a new root. It is not a GitHub fork of
 [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). The
 four ponytail skills are vendored from that project the same way the other
-sources are. `upstream/<name>` is a shallow tip of that original repo.
-`sync/<name>` is the pull-request branch into `main`. The older fork at
+sources are. `upstream/<name>` is a one-commit snapshot of the commit pinned
+in `upstreams.json`. If that commit had `.github/workflows`, those files are
+left out so the upstream's Actions do not run here. `sync/<name>` is the
+pull-request branch into `main`. The older fork at
 [AbhinayBoda/ponytail](https://github.com/AbhinayBoda/ponytail) still holds
 that history.

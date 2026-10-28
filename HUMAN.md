@@ -101,7 +101,8 @@ included) and the files we only watch because our own text is based on them.
 2. A second job, the only one allowed to write, opens one pull request per
    changed upstream, from branch `sync/<name>` into `main`. The branch
    starts from `main` and the diff is only that upstream. `upstream/<name>`
-   is the original repo's tip and is not used for these pull requests. The pull request
+   is a one-commit snapshot of the pinned commit, not these pull requests,
+   and not the upstream's history. The pull request
    carries the table of what changed, the link to that upstream's diff, the
    check results, and the watched files to port by hand. It never merges, and
    while that pull request is open later runs leave it alone, so fixes you
@@ -130,7 +131,7 @@ Each check prints one line saying what it guarantees, then `PASS`, `FAIL` or
 `SKIP`; a failure lists what to fix. The browser check skips when Chrome is not
 installed. The run ends with the context cost per turn. `.github/workflows/check.yml`
 runs both commands on every push and pull request to `main` and `sync/*`.
-`upstream/*` is a mirror of the original repo and does not carry this workflow.
+`upstream/*` does not carry this workflow.
 
 `--check` is a byte-for-byte match against the pinned commit. It does not re-run
 the upstream project's test suite or its published benchmarks. Those suites are
