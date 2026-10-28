@@ -87,22 +87,22 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           for name in $(jq -r 'keys[]' "$RUNNER_TEMP/bundle.json"); do
-            open=$(gh pr list --head "upstream/$name" --base main --state open --json number --jq 'length')
+            open=$(gh pr list --head "sync/$name" --base main --state open --json number --jq 'length')
             if [ "$open" != 0 ]; then
-              echo "upstream/$name already has an open pull request; merge or close it to get the next one."
+              echo "sync/$name already has an open pull request; merge or close it to get the next one."
               continue
             fi
-            git switch -C "upstream/$name" origin/main
+            git switch -C "sync/$name" origin/main
             jq -r --arg n "$name" '.[$n].pins' "$RUNNER_TEMP/bundle.json" | base64 -d > upstreams.json
             node scripts/sync.mjs --restore --only "$name"
             jq -r --arg n "$name" '.[$n].body' "$RUNNER_TEMP/bundle.json" | base64 -d > "$RUNNER_TEMP/body.md"
             git add -A
             git commit -m "Sync $name"
-            if git ls-remote --exit-code --heads origin "upstream/$name" >/dev/null; then
-              git fetch origin "upstream/$name"
-              git push --force-with-lease="refs/heads/upstream/$name:refs/remotes/origin/upstream/$name" origin "HEAD:upstream/$name"
+            if git ls-remote --exit-code --heads origin "sync/$name" >/dev/null; then
+              git fetch origin "sync/$name"
+              git push --force-with-lease="refs/heads/sync/$name:refs/remotes/origin/sync/$name" origin "HEAD:sync/$name"
             else
-              git push -u origin "HEAD:upstream/$name"
+              git push -u origin "HEAD:sync/$name"
             fi
-            gh pr create --base main --head "upstream/$name" --title "Sync $name" --body-file "$RUNNER_TEMP/body.md"
+            gh pr create --base main --head "sync/$name" --title "Sync $name" --body-file "$RUNNER_TEMP/body.md"
           done

@@ -1,7 +1,7 @@
 # Lean Agent Toolkit
 
-Nineteen agent skills that make a coding agent write less code, spend fewer
-tokens and keep its context clean. They are collected from nine open-source
+Twenty agent skills that make a coding agent write less code, spend fewer
+tokens and keep its context clean. They are collected from ten open-source
 projects, trimmed to what does the work, checked, and laid out so the same
 files work in Cursor, Antigravity, Claude Code, Codex and any agent that reads
 `AGENTS.md`. Nothing to install: Markdown plus a few zero-dependency scripts.
@@ -44,6 +44,7 @@ pick skills from their descriptions.
 | `brag-slim` | A short launch video of your project, with music and share copy. | Node, FFmpeg | [brag](https://github.com/latent-spaces/brag) |
 | `toon` | Encodes JSON records as TOON before they go into a prompt. | Node 22.18+ | [toon](https://github.com/toon-format/toon) |
 | `lean-shell` | Terse command output: snip's filters as habits, no binary needed. | nothing | idea from [snip](https://github.com/edouard-claude/snip) |
+| `caveman` | Short speech for long replies, status notes, and handoffs. Code stays exact. | nothing | [caveman](https://github.com/JuliusBrussee/caveman) |
 | `fast-browser` | Reads a web page as a numbered table of controls instead of screenshots. | a browser tool | [jev-ultrafast](https://github.com/browser-use/jev-ultrafast) |
 | `improve-claude-md` | Rewrites an instruction file with `<important if>` blocks. | nothing | [humanlayer/skills](https://github.com/humanlayer/skills) |
 | `build-iterated-agentic-loop` | Builds a scheduled coding-agent workflow with its skill, prompt and memory. | nothing | [humanlayer/skills](https://github.com/humanlayer/skills) |
@@ -67,12 +68,13 @@ tells the agent which one leads:
 - **Building.** `learn` decides who designs, `rpi` decides how the work is
   staged, `ponytail` decides how little code it takes.
 - **Context.** `lean-shell` for command output, `toon` for data, `fast-browser`
-  for web pages, `rpi` for long work split across sessions.
+  for web pages, `caveman` for long replies and handoffs, `rpi` for long work
+  split across sessions.
 
 ## Credits
 
 Every vendored folder keeps its upstream `LICENSE` (MIT, or Apache-2.0 for
-archify). [upstreams.json](upstreams.json) pins the exact commit each one came
+archify and caveman). [upstreams.json](upstreams.json) pins the exact commit each one came
 from, and a daily job proposes updates as pull requests ([HUMAN.md](HUMAN.md#updates)).
 The toolkit's own files are [MIT](LICENSE).
 
@@ -81,6 +83,7 @@ The toolkit's own files are [MIT](LICENSE).
 This repository is a new root. It is not a GitHub fork of
 [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). The
 four ponytail skills are vendored from that project the same way the other
-eight sources are. The older fork at
+sources are. `upstream/<name>` is a shallow tip of that original repo.
+`sync/<name>` is the pull-request branch into `main`. The older fork at
 [AbhinayBoda/ponytail](https://github.com/AbhinayBoda/ponytail) still holds
 that history.

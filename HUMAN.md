@@ -1,6 +1,6 @@
 # Using the toolkit
 
-What you get: one always-on rule file (`AGENTS.md`), nineteen skills in
+What you get: one always-on rule file (`AGENTS.md`), twenty skills in
 `.agents/skills/`, and, for Cursor, four read-only subagents in `.cursor/agents/`.
 No installer, no hooks, no background process, no network calls of its own.
 
@@ -77,7 +77,7 @@ this", "security audit ./src", "make a launch video".
 
 | Skill | Needs | Writes or sends |
 |---|---|---|
-| `ponytail`, `ponytail-review`, `ponytail-audit`, `ponytail-debt`, `show-me`, `improve-claude-md`, `narrow-react-prop-types`, `build-iterated-agentic-loop`, `design-control-loop`, `lean-shell` | nothing | only what you ask for |
+| `ponytail`, `ponytail-review`, `ponytail-audit`, `ponytail-debt`, `show-me`, `improve-claude-md`, `narrow-react-prop-types`, `build-iterated-agentic-loop`, `design-control-loop`, `lean-shell`, `caveman` | nothing | only what you ask for. `caveman` changes speech, not files |
 | `rpi` | nothing | documents in `.agents/artifacts/` (its authors suggest not committing them) |
 | `learn`, `reset` | Python 3 for `reset` | notes in `.vibe-wise/`; `reset` backs them up before clearing |
 | `security-audit` | Node | guidance in chat; a full audit writes to `~/security-audit-skill/<repo>/` and runs target code only inside a sandbox you provide |
@@ -99,8 +99,9 @@ included) and the files we only watch because our own text is based on them.
    that changed, it re-vendors only that upstream's files and runs every check.
    A failed check skips that upstream and does not open a pull request for it.
 2. A second job, the only one allowed to write, opens one pull request per
-   changed upstream, from branch `upstream/<name>` into `main`. The branch
-   starts from `main` and the diff is only that upstream. The pull request
+   changed upstream, from branch `sync/<name>` into `main`. The branch
+   starts from `main` and the diff is only that upstream. `upstream/<name>`
+   is the original repo's tip and is not used for these pull requests. The pull request
    carries the table of what changed, the link to that upstream's diff, the
    check results, and the watched files to port by hand. It never merges, and
    while that pull request is open later runs leave it alone, so fixes you
@@ -128,8 +129,8 @@ node scripts/sync.mjs --check # every vendored file still matches its pinned ups
 Each check prints one line saying what it guarantees, then `PASS`, `FAIL` or
 `SKIP`; a failure lists what to fix. The browser check skips when Chrome is not
 installed. The run ends with the context cost per turn. `.github/workflows/check.yml`
-runs both commands on every push and pull request, including each `upstream/<name>`
-branch.
+runs both commands on every push and pull request to `main` and `sync/*`.
+`upstream/*` is a mirror of the original repo and does not carry this workflow.
 
 `--check` is a byte-for-byte match against the pinned commit. It does not re-run
 the upstream project's test suite or its published benchmarks. Those suites are
@@ -148,9 +149,9 @@ the fast-browser form test, which asserts a password field is never listed.
 | Runs code on its own | no | hooks can | yes, a server process |
 | Updates | the sync pull request above | the marketplace | the server's release |
 
-`node scripts/check.mjs` measures the per-turn cost: about 1,500 tokens for
-`AGENTS.md` plus 1,300 for the skill index, against roughly 34,500 if the same
-nineteen skills were always-on rules.
+`node scripts/check.mjs` measures the per-turn cost: 1,650 tokens for
+`AGENTS.md` plus 1,359 for the skill index, against 36,224 if the same
+twenty skills were always-on rules.
 
 ## Layout
 
@@ -160,7 +161,7 @@ HUMAN.md               this guide
 README.md              what is inside
 CHECKLIST.md           the gate for every change and every upstream sync
 upstreams.json         where each vendored folder comes from, pinned to a commit
-.agents/skills/        the nineteen skills
+.agents/skills/        the twenty skills
 .cursor/agents/        Cursor subagents
 scripts/check.mjs      the tests
 scripts/sync.mjs       the vendoring

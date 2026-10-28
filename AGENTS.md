@@ -50,6 +50,7 @@ Skills live in `.agents/skills/<name>/SKILL.md`. Load one only when its row matc
 | Context | `toon` | Putting lists of same-shaped records into a prompt: encode them as TOON first. |
 | Context | `lean-shell` | Running commands whose output could be long. |
 | Context | `fast-browser` | Driving a web page through a browser tool. |
+| Context | `caveman` | A reply, a status note, or a handoff between agents is running long, or the user asks for fewer words. Speech only. |
 | Agents | `improve-claude-md` | Rewriting a CLAUDE.md or AGENTS.md with `<important if>` blocks. |
 | Agents | `build-iterated-agentic-loop` | Building a scheduled coding-agent workflow with its skill, prompt and memory file. |
 | Agents | `design-control-loop` | Designing an agentic control loop (sensor, controller, actuator) and building it. |
@@ -60,8 +61,9 @@ Skills live in `.agents/skills/<name>/SKILL.md`. Load one only when its row matc
 - Diagrams: a quick explanation in chat is `show-me`; anything to keep, explore or share is `archify`, which can turn a text diagram or Mermaid into interactive HTML. In `learn` mode follow its diagram rules: compact, unknowns marked, never revealing a design before the learner has reasoned about it.
 - Reviews: `ponytail-review` on every change, where security is one of six checks; `security-audit` when the user wants security depth.
 - Learning: while `learn` is active the learner owns the design, so ask first as it says; once a design is agreed, the ponytail rules decide how small the code is.
+- Speech: `caveman` shortens replies, status lines, and handoffs between agents. Ponytail still decides how much code. Code, commits, and security warnings stay in full sentences. `lean-shell` and `toon` shrink what an agent reads; caveman does not replace them.
 
 # Context habits
 
-- Short command output first (`lean-shell`), records to models as TOON (`toon`), pages as a numbered control table (`fast-browser`).
+- Short command output first (`lean-shell`), records to models as TOON (`toon`), pages as a numbered control table (`fast-browser`), long replies and agent handoffs in `caveman`.
 - Long research or multi-phase work goes into files, and the next phase starts from those files in a fresh context (`rpi`).

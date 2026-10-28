@@ -92,6 +92,17 @@
       "hooks/session_start.py"
     ]
   },
+  "caveman": {
+    "repo": "JuliusBrussee/caveman",
+    "commit": "9b68f7ed12b05e7efaff18e65c5a3fc2849fd0a4",
+    "license": "LICENSE",
+    "copy": {
+      "skills/caveman": ".agents/skills/caveman"
+    },
+    "watch": [
+      "README.md"
+    ]
+  },
   "snip": {
     "repo": "edouard-claude/snip",
     "commit": "19c404389b6cd7a47722a075f95ec389bc6de68d",
