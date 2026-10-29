@@ -77,15 +77,3 @@ Every vendored folder keeps its upstream `LICENSE` (MIT, or Apache-2.0 for
 archify and caveman). [upstreams.json](upstreams.json) pins the exact commit each one came
 from, and a daily job proposes updates as pull requests ([HUMAN.md](HUMAN.md#updates)).
 The toolkit's own files are [MIT](LICENSE).
-
-## History
-
-This repository is a new root. It is not a GitHub fork of
-[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail). The
-four ponytail skills are vendored from that project the same way the other
-sources are. `upstream/<name>` is a one-commit snapshot of the commit pinned
-in `upstreams.json`. If that commit had `.github/workflows`, those files are
-left out so the upstream's Actions do not run here. `sync/<name>` is the
-pull-request branch into `main`. The older fork at
-[AbhinayBoda/ponytail](https://github.com/AbhinayBoda/ponytail) still holds
-that history.
